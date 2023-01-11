@@ -2,23 +2,72 @@ import argparse
 import glob
 import os
 
-import icon_registration.pretrained_models
 import itk
 import numpy as np
 import pandas as pd
 import torch
+import icon_registration
+import icon_registration.pretrained_models
 from icon_registration import itk_wrapper
+from icon_registration import networks
+import icon_registration as icon
+import SimpleITK as sitk
 
+def make_network(input_shape, include_last_step=False, lmbda=1.5, loss_fn=icon.LNCC(sigma=5)):
+    
+    dimension = len(input_shape) - 2
+    input_channels = input_shape[1]
+    inner_net = icon.FunctionFromVectorField(networks.tallUNet2(dimension=dimension, input_channels=input_channels))
+
+    for _ in range(2):
+        inner_net = icon.TwoStepRegistration(
+            icon.DownsampleRegistration(inner_net, dimension=dimension),
+            icon.FunctionFromVectorField(networks.tallUNet2(dimension=dimension, input_channels=input_channels))
+        )
+    if include_last_step:
+        inner_net = icon.TwoStepRegistration(inner_net, icon.FunctionFromVectorField(networks.tallUNet2(dimension=dimension, input_channels=input_channels)))
+    
+    net = icon.GradientICON(inner_net, loss_fn, lmbda=lmbda)
+    net.assign_identity_map(input_shape)
+    return net
 
 def get_model():
+    input_shape = [1, 4, 155, 240, 240]
 
     # Read in your trained model
-    model = icon_registration.pretrained_models.brain_registration_model(
-        pretrained=True
-    )
-    model.regis_net.load_state_dict(torch.load("/usr/bin/brain_registration_model.trch"))
+    model = make_network(input_shape, include_last_step=False)
+    # model.regis_net.load_state_dict(torch.load("./singularity/Step_2_final.trch", map_location='cpu'))
+    model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/icon_lung/ICON/results/BraTS/gradicon_with_augment/debug/Step_1_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/usr/local/bin/Step_2_final.trch"))
     return model
 
+def cast_itk_image_to_float(image):
+    if type(image) == itk.Image[itk.SS, 3] :
+        cast_filter = itk.CastImageFilter[itk.Image[itk.SS, 3], itk.Image[itk.F, 3]].New()
+        cast_filter.SetInput(image)
+        cast_filter.Update()
+        image = cast_filter.GetOutput()
+    return image
+
+def cast_sitk_transformation_to_dispfield(tr, reference):
+    # return itk.transform_to_displacement_field_filter(
+    #     tr,
+    #     reference_image=reference,
+    #     use_reference_image=True
+    # )
+    filt = sitk.TransformToDisplacementFieldFilter()
+    filt.SetReferenceImage(reference)
+    return filt.Execute(tr)
+
+def apply_field_on_image(tr, moving, interpolation_type):
+        return itk.resample_image_filter(
+            moving,
+            use_reference_image = True,
+            reference_image=moving,
+            transform=tr,
+            interpolator=itk.LinearInterpolateImageFunction.New(moving) if interpolation_type=="trilinear" else itk.NearestNeighborInterpolateImageFunction.New(moving),
+            default_pixel_value=0.
+        )
 
 def generate_output(args):
     """
@@ -28,6 +77,9 @@ def generate_output(args):
 
     input_path = os.path.abspath(args["input"])
     output_path = os.path.abspath(args["output"])
+
+    if not os.path.exists(output_path):
+        os.mkdir(output_path)
 
     print(
         f"* Found following data in the input path {input_path}=",
@@ -46,27 +98,32 @@ def generate_output(args):
             f"Now performing registration on {subj}"
         )  # Now performing registration on BraTSReg_001
 
-        # Read in your data
-        input_pre_path = glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]
-        input_pre = itk.imread(input_pre_path)
-        input_pre = icon_registration.pretrained_models.brain_network_preprocess(input_pre)
-        input_post_path = glob.glob(os.path.join(subj_path, f"{subj}_01_*_t1.nii.gz"))[
-            0
-        ]
-        input_post = itk.imread(input_post_path)
-        input_post = icon_registration.pretrained_models.brain_network_preprocess(input_post)
+        file_list = os.listdir(subj_path)
+        source_list = list(filter(lambda x: ("_00_" in x) and ("t1.nii" in x), file_list))
+        target_list = list(filter(lambda x: ("_01_" in x) and ("t1.nii" in x), file_list))
+        source_id = "_".join(source_list[0].split('_')[:-1])
+        target_id = "_".join(target_list[0].split('_')[:-1])
 
-        phi_pre_post, phi_post_pre = itk_wrapper.register_pair(
-            model, input_pre, input_post, finetune_steps=50
+        # Read in your data
+        source = []
+        target = []
+        for m in ['flair', 't1', 't1ce', 't2']:
+            source.append(icon_registration.pretrained_models.brain_network_preprocess(
+                itk.imread(f"{subj_path}/{source_id}_{m}.nii.gz")
+            ))
+
+            target.append(icon_registration.pretrained_models.brain_network_preprocess(
+                itk.imread(f"{subj_path}/{target_id}_{m}.nii.gz")
+            ))
+
+        phi_pre_post, phi_post_pre = itk_wrapper.register_pair_with_multimodalities(
+            model, source, target#, finetune_steps=50
         )
 
         # Make your prediction segmentation file for case BraTSReg_001
 
         ## 1. calculate the output landmark points
-        post_landmarks_path = glob.glob(
-            os.path.join(subj_path, f"{subj}_01_*_landmarks.csv")
-        )[0]
-        post_landmarks = pd.read_csv(post_landmarks_path).values
+        post_landmarks = pd.read_csv(os.path.join(subj_path, f"{target_id}_landmarks.csv")).values
 
         pre_landmarks = np.array(
             [
@@ -78,41 +135,46 @@ def generate_output(args):
         pre_landmarks_ind = post_landmarks.copy()
         pre_landmarks_ind[:, 1:] = pre_landmarks
 
-        np.savetxt(pre_landmarks_ind, os.path.join(args["output"], f"{subj}.csv"), header="Landmark,X,Y,Z", delimiter=",")
+        np.savetxt(os.path.join(args["output"], f"{subj}.csv"), pre_landmarks_ind, header="Landmark,X,Y,Z", delimiter=",", fmt=['%i','%f','%f','%f'], comments='')
 
-        itk.transformwrite([phi_pre_post], os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
-
+        
         ## 2. calculate the determinant of jacobian of the deformation field
         import SimpleITK as sitk
 
+        itk.transformwrite([phi_pre_post], os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
         phi_pre_post_sitk = sitk.ReadTransform(os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
-        filt = sitk.TransformToDisplacementFieldFilter()
-        filt.SetReferenceImage(
-            sitk.ReadImage(
-                glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]
-            )
-        )
-        displacement_image_sitk = filt.Execute(phi_pre_post_sitk)
+        displacement_image_sitk = cast_sitk_transformation_to_dispfield(phi_pre_post_sitk, sitk.ReadImage(glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]))
+        
         det_sitk = sitk.DisplacementFieldJacobianDeterminantFilter().Execute(
             displacement_image_sitk
         )
 
-        ## write your output_detj to the output folder as BraTSReg_001.nii.gz
+        # write your output_detj to the output folder as BraTSReg_001.nii.gz
         sitk.WriteImage(det_sitk, os.path.join(args["output"], f"{subj}_detj.nii.gz"))
+
+        ## Try to solve it via itk
+        # displacement_image_sitk = cast_sitk_transformation_to_dispfield(phi_pre_post, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]))
+        # det_itk = itk.displacement_field_jacobian_determinant_filter(displacement_image_sitk)
+        # itk.imwrite(det_itk, os.path.join(args["output"], f"{subj}_detj.nii.gz"))
 
         if args["def"]:
             # write both the forward and backward deformation fields to the output/ folder
             print("--def flag is set to True")
-            # write(output_def_followup_to_baseline, os.path.join(args["output"], f"{subj}_df_f2b.nii.gz"))
-            # write(output_def_baseline_to_followup, os.path.join(args["output"], f"{subj}_df_b2f.nii.gz"))
+            # itk.transformwrite([phi_pre_post], os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
+            # itk.transformwrite([phi_post_pre], os.path.join(output_path, f"{subj}_df_b2f.hdf5"))
+
+            # itk.transformwrite([phi_pre_post.GetDisplacementField()], os.path.join(output_path, f"{subj}_df_f2b.nii.gz"))
+            # itk.transformwrite([phi_post_pre.GetDisplacementField()], os.path.join(output_path, f"{subj}_df_b2f.nii.gz"))
 
         if args["reg"]:
             # write the followup_registered_to_baseline sequences (all 4 sequences provided) to the output/ folder
             print("--reg flag is set to True")
-            # write(output_followup_to_baseline_t1ce, os.path.join(args["output"], f"{subj}_t1ce_f2b.nii.gz"))
-            # write(output_followup_to_baseline_t1, os.path.join(args["output"], f"{subj}_t1_f2b.nii.gz"))
-            # write(output_followup_to_baseline_t2, os.path.join(args["output"], f"{subj}_t2_f2b.nii.gz"))
-            # write(output_followup_to_baseline_flair, os.path.join(args["output"], f"{subj}_flair_f2b.nii.gz"))
+            for m in ['flair', 't1', 't1ce', 't2']:
+                itk.imwrite(
+                    apply_field_on_image(phi_post_pre, cast_itk_image_to_float(itk.imread(f"{subj_path}/{target_id}_{m}.nii.gz")), "trilinear"),
+                    os.path.join(args["output"], f"{subj}_{m}_f2b.nii.gz")
+                )
+
 
 
 def apply_deformation(args):
@@ -122,17 +184,17 @@ def apply_deformation(args):
     print("apply_deformation called")
 
     # Read the field
-    f = read(path_to_deformation_field)
+    f = itk.transformread(args["field"])
 
     # Read the input image
-    i = read(path_to_input_image)
+    i = cast_itk_image_to_float(itk.imread(args['image']))
 
     # apply field on image and get output
-    o = apply_field_on_image(f, i, interpolation_type)
+    o = apply_field_on_image(f, i, args["interpolation"])
 
     # If a save_path is provided then write the output there, otherwise return the output
-    if save_path:
-        write(o, savepath)
+    if args["path_to_output_nifti"] is not None:
+        sitk.WriteImage(o, f"{args['path_to_output_nifti']}.nii.gz")
     else:
         return o
 
@@ -140,7 +202,7 @@ def apply_deformation(args):
 if __name__ == "__main__":
     # You can first check what devices are available to the singularity
     # setting device on GPU if available, else CPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
     # Additional Info when using cuda
