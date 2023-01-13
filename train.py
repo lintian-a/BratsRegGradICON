@@ -19,12 +19,7 @@ def write_stats(writer, stats: ICONLoss, ite):
         writer.add_scalar(k, v, ite)
 
 
-
-BATCH_SIZE = 2
-input_shape = [BATCH_SIZE, 4, 155, 240, 240]
-
 GPUS = 4
-
 
 def make_network(input_shape, include_last_step=False, lmbda=1.5, loss_fn=icon.LNCC(sigma=5)):
     dimension = len(input_shape) - 2
@@ -44,13 +39,14 @@ def make_network(input_shape, include_last_step=False, lmbda=1.5, loss_fn=icon.L
     return net
 
 class BraTSDataset():
-    def __init__(self, batch_size, with_augment=False, data_path="/playpen-raid2/lin.tian/data/BraTS-Reg/BraTSReg_Training_Data_v3/"):
+    def __init__(self, batch_size, with_augment=False, cross_patient=False, data_path="/playpen-raid2/lin.tian/data/BraTS-Reg/BraTSReg_Training_Data_v3/"):
         with open(f"{data_path}/data_id.txt", 'r') as f:
             self.pair_path = list(map(lambda x: x[:-1].split(','), f.readlines()))
         self.data_path = data_path
         self.modality_list = ['flair', 't1', 't1ce', 't2']
         self.batch_size = batch_size
         self.with_augment = with_augment
+        self.cross_patient = cross_patient
     
     def __len__(self):
         return len(self.pair_path)
@@ -60,25 +56,35 @@ class BraTSDataset():
         iA =  iA/np.amax(iA, axis=(2,3,4), keepdims=True)
         return iA
     
+    def load_modalities(self, case_id):
+        res = []
+        for m in self.modality_list:
+            res.append(itk.imread(f"{self.data_path}/{case_id}_{m}.nii.gz"))
+        return np.array(res)
+    
     def __call__(self):
         case_ids = random.choices(self.pair_path, k=self.batch_size)
+        if self.cross_patient:
+            case_ids_other = random.choices(self.pair_path, k=self.batch_size)
+            case_ids = [[i[0],j[1]] for i, j in zip(case_ids, case_ids_other)]
 
         sources = []
         targets = []
         for c in case_ids:
-            source = []
-            target = []
-            for m in self.modality_list:
-                source.append(itk.imread(f"{self.data_path}/{c[0]}_{m}.nii.gz"))
-                target.append(itk.imread(f"{self.data_path}/{c[1]}_{m}.nii.gz"))
-            sources.append(np.array(source))
-            targets.append(np.array(target))
+            sources.append(self.load_modalities(c[0]))
+            targets.append(self.load_modalities(c[1]))
 
         if self.with_augment:
             with torch.no_grad():
+                # # To reduce the memory consumption on augmentation
+                # res = []
+                # for i in range(self.batch_size//4):
+                #     res.append(augment(torch.from_numpy(self.process(np.array(sources[4*i:4*(i+1)]))), torch.from_numpy(self.process(np.array(targets[4*i:4*(i+1)]))).cuda()))
+                # return torch.cat(res[:][0], dim=0), torch.cat(res[:][1], dim=0)
                 return augment(torch.from_numpy(self.process(np.array(sources))).cuda(), torch.from_numpy(self.process(np.array(targets))).cuda())
         else:
             return torch.from_numpy(self.process(np.array(sources))).cuda(), torch.from_numpy(self.process(np.array(targets))).cuda()
+
 
 def augment(image_A, image_B):
     identity_list = []
@@ -115,7 +121,12 @@ def augment(image_A, image_B):
 
     return warped_A, warped_B
 
-def train_two_stage(input_shape, batch_function, GPUS, ITERATIONS_PER_STEP):
+def train_two_stage(GPUS, ITERATIONS_PER_STEP):
+
+    BATCH_SIZE = 2
+    input_shape = [BATCH_SIZE, 4, 155, 240, 240]
+
+    batch_function = BraTSDataset(BATCH_SIZE*GPUS, with_augment=False, cross_patient=True)
 
     net = make_network(input_shape, include_last_step=False)
 
@@ -133,10 +144,16 @@ def train_two_stage(input_shape, batch_function, GPUS, ITERATIONS_PER_STEP):
                 net.regis_net.state_dict(),
                 footsteps.output_dir + "Step_1_final.trch",
             )
+    
+    # To fit into the memory, we reduce the batch size to 1
+    BATCH_SIZE = 1
+    input_shape = [BATCH_SIZE, 4, 155, 240, 240]
+    batch_function = BraTSDataset(BATCH_SIZE*GPUS, with_augment=False, cross_patient=True)
 
     net_2 = make_network(input_shape, include_last_step=True)
 
     net_2.regis_net.netPhi.load_state_dict(net.regis_net.state_dict())
+    # net_2.regis_net.netPhi.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/icon_lung/ICON/results/BraTS/gradicon_with_augment/debug/Step_1_final.trch", map_location="cpu"))
 
     del net
     del net_par
@@ -164,10 +181,10 @@ def train_two_stage(input_shape, batch_function, GPUS, ITERATIONS_PER_STEP):
 
 if __name__ == "__main__":
     footsteps.initialize()
-    brains_loader = BraTSDataset(BATCH_SIZE*GPUS, with_augment=True)
+    
 
     # torch.backends.cudnn.enabled = True
     # torch.backends.cudnn.benchmark = True
     # torch.autograd.set_detect_anomaly(True)
     
-    train_two_stage(input_shape, brains_loader, GPUS, 10000)
+    train_two_stage(GPUS, 10000)
