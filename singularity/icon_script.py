@@ -63,25 +63,23 @@ def cast_itk_transformation_to_dispfield(tr, reference):
     return filter.GetOutput()
 
 def read_itk_dispfield(path):
-    fieldReader = itk.ImageFileReader[itk.Image[itk.Vector[itk.F, 3], 3]].New()
+    fieldReader = itk.ImageFileReader[itk.VectorImage[itk.D,3]].New()
     fieldReader.SetFileName(path)
     fieldReader.Update()
-    return fieldReader.GetOutput()
-    # phi_img =  fieldReader.GetOutput()
-    # cast_filter = itk.CastImageFilter[itk.Image[itk.Vector[itk.F, 3], 3], itk.Image[itk.Vector[itk.D, 3], 3]].New()
-    # cast_filter.SetInput(phi_img)
-    # cast_filter.Update()
-    # return cast_filter.GetOutput()
+    disp = fieldReader.GetOutput()
+    disp_tr = itk.DisplacementFieldTransform[(itk.D, 3)].New()
+    disp_tr.SetDisplacementField(disp)
+    return disp_tr
 
 def apply_field_on_image(tr, moving, interpolation_type):
-        return itk.resample_image_filter(
-            moving,
-            use_reference_image = True,
-            reference_image=moving,
-            transform=tr,
-            interpolator=itk.LinearInterpolateImageFunction.New(moving) if interpolation_type=="trilinear" else itk.NearestNeighborInterpolateImageFunction.New(moving),
-            default_pixel_value=0.
-        )
+    return itk.resample_image_filter(
+        moving,
+        use_reference_image = True,
+        reference_image=moving,
+        transform=tr,
+        interpolator=itk.LinearInterpolateImageFunction.New(moving) if interpolation_type=="trilinear" else itk.NearestNeighborInterpolateImageFunction.New(moving),
+        default_pixel_value=0.
+    )
 
 def generate_output(args):
     """
@@ -169,10 +167,10 @@ def generate_output(args):
         if args["def"]:
             # write both the forward and backward deformation fields to the output/ folder
             print("--def flag is set to True")
-            itk.imwrite(displacement_image_itk, os.path.join(output_path, f"{subj}_df_b2f.hdf5"))
+            itk.imwrite(displacement_image_itk, os.path.join(output_path, f"{subj}_df_b2f.nii.gz"))
             itk.imwrite(
                 cast_itk_transformation_to_dispfield(phi_post_pre, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_01_*_t1.nii.gz"))[0])), 
-                os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
+                os.path.join(output_path, f"{subj}_df_f2b.nii.gz"))
 
         if args["reg"]:
             # write the followup_registered_to_baseline sequences (all 4 sequences provided) to the output/ folder
@@ -192,12 +190,7 @@ def apply_deformation(args):
     print("apply_deformation called")
 
     # Read the field
-    f = itk.DisplacementFieldTransform[(itk.F, 3)].New()
-    f.SetDisplacementField(read_itk_dispfield(args["field"]))
-    
-    # phi = itk.CompositeTransform[itk.D, 3].New()
-    # phi.PrependTransform(f)
-    # f = itk.transformread(args["field"])
+    f = read_itk_dispfield(args["field"])
 
     # Read the input image
     i = cast_itk_image_to_float(itk.imread(args['image']))
@@ -207,7 +200,7 @@ def apply_deformation(args):
 
     # If a save_path is provided then write the output there, otherwise return the output
     if args["path_to_output_nifti"] is not None:
-        itk.imwrite(o, f"{args['path_to_output_nifti']}.nii.gz")
+        itk.imwrite(o, args['path_to_output_nifti'])
     else:
         return o
 
