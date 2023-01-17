@@ -62,6 +62,17 @@ def cast_itk_transformation_to_dispfield(tr, reference):
     filter.Update()
     return filter.GetOutput()
 
+def read_itk_dispfield(path):
+    fieldReader = itk.ImageFileReader[itk.Image[itk.Vector[itk.F, 3], 3]].New()
+    fieldReader.SetFileName(path)
+    fieldReader.Update()
+    return fieldReader.GetOutput()
+    # phi_img =  fieldReader.GetOutput()
+    # cast_filter = itk.CastImageFilter[itk.Image[itk.Vector[itk.F, 3], 3], itk.Image[itk.Vector[itk.D, 3], 3]].New()
+    # cast_filter.SetInput(phi_img)
+    # cast_filter.Update()
+    # return cast_filter.GetOutput()
+
 def apply_field_on_image(tr, moving, interpolation_type):
         return itk.resample_image_filter(
             moving,
@@ -158,10 +169,10 @@ def generate_output(args):
         if args["def"]:
             # write both the forward and backward deformation fields to the output/ folder
             print("--def flag is set to True")
-            itk.imwrite(displacement_image_itk, os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
+            itk.imwrite(displacement_image_itk, os.path.join(output_path, f"{subj}_df_b2f.hdf5"))
             itk.imwrite(
                 cast_itk_transformation_to_dispfield(phi_post_pre, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_01_*_t1.nii.gz"))[0])), 
-                os.path.join(output_path, f"{subj}_df_b2f.hdf5"))
+                os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
 
         if args["reg"]:
             # write the followup_registered_to_baseline sequences (all 4 sequences provided) to the output/ folder
@@ -181,7 +192,12 @@ def apply_deformation(args):
     print("apply_deformation called")
 
     # Read the field
-    f = itk.transformread(args["field"])
+    f = itk.DisplacementFieldTransform[(itk.F, 3)].New()
+    f.SetDisplacementField(read_itk_dispfield(args["field"]))
+    
+    # phi = itk.CompositeTransform[itk.D, 3].New()
+    # phi.PrependTransform(f)
+    # f = itk.transformread(args["field"])
 
     # Read the input image
     i = cast_itk_image_to_float(itk.imread(args['image']))
