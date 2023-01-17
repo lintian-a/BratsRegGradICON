@@ -35,9 +35,12 @@ def get_model():
     input_shape = [1, 4, 155, 240, 240]
 
     # Read in your trained model
-    model = make_network(input_shape, include_last_step=False)
+    model = make_network(input_shape, include_last_step=True)
     # model.regis_net.load_state_dict(torch.load("./singularity/Step_2_final.trch", map_location='cpu'))
-    model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/icon_lung/ICON/results/BraTS/gradicon_with_augment/debug/Step_1_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/icon_lung/ICON/results/BraTS/gradicon_with_augment/debug/Step_1_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_with_augmentation/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_crosspatient_train/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
+    model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/usr/local/bin/Step_2_final.trch"))
     return model
 
@@ -49,15 +52,15 @@ def cast_itk_image_to_float(image):
         image = cast_filter.GetOutput()
     return image
 
-def cast_sitk_transformation_to_dispfield(tr, reference):
-    # return itk.transform_to_displacement_field_filter(
-    #     tr,
-    #     reference_image=reference,
-    #     use_reference_image=True
-    # )
-    filt = sitk.TransformToDisplacementFieldFilter()
-    filt.SetReferenceImage(reference)
-    return filt.Execute(tr)
+def cast_itk_transformation_to_dispfield(tr, reference):
+    filter = itk.TransformToDisplacementFieldFilter[itk.itkImagePython.itkImageVF33, itk.D].New()
+    decorator = itk.DataObjectDecorator[itk.Transform[itk.D, 3, 3]].New()
+    decorator.Set(tr)
+    filter.SetInput(decorator)
+    filter.SetReferenceImage(reference)
+    filter.SetUseReferenceImage(True)
+    filter.Update()
+    return filter.GetOutput()
 
 def apply_field_on_image(tr, moving, interpolation_type):
         return itk.resample_image_filter(
@@ -79,7 +82,7 @@ def generate_output(args):
     output_path = os.path.abspath(args["output"])
 
     if not os.path.exists(output_path):
-        os.mkdir(output_path)
+        os.makedirs(output_path)
 
     print(
         f"* Found following data in the input path {input_path}=",
@@ -88,6 +91,15 @@ def generate_output(args):
     print(
         "* Output will be written to=", output_path
     )  # Output will be written to= /output
+
+    # You can first check what devices are available to the singularity
+    # setting device on GPU if available, else CPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+
+    # Additional Info when using cuda
+    if device.type == "cuda":
+        print("GPU:", torch.cuda.get_device_name(0))
 
     model = get_model()
 
@@ -139,32 +151,17 @@ def generate_output(args):
 
         
         ## 2. calculate the determinant of jacobian of the deformation field
-        import SimpleITK as sitk
-
-        itk.transformwrite([phi_pre_post], os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
-        phi_pre_post_sitk = sitk.ReadTransform(os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
-        displacement_image_sitk = cast_sitk_transformation_to_dispfield(phi_pre_post_sitk, sitk.ReadImage(glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]))
-        
-        det_sitk = sitk.DisplacementFieldJacobianDeterminantFilter().Execute(
-            displacement_image_sitk
-        )
-
-        # write your output_detj to the output folder as BraTSReg_001.nii.gz
-        sitk.WriteImage(det_sitk, os.path.join(args["output"], f"{subj}_detj.nii.gz"))
-
-        ## Try to solve it via itk
-        # displacement_image_sitk = cast_sitk_transformation_to_dispfield(phi_pre_post, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]))
-        # det_itk = itk.displacement_field_jacobian_determinant_filter(displacement_image_sitk)
-        # itk.imwrite(det_itk, os.path.join(args["output"], f"{subj}_detj.nii.gz"))
+        displacement_image_itk = cast_itk_transformation_to_dispfield(phi_pre_post, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]))
+        det_itk = itk.displacement_field_jacobian_determinant_filter(displacement_image_itk)
+        itk.imwrite(det_itk, os.path.join(args["output"], f"{subj}_detj.nii.gz"))
 
         if args["def"]:
             # write both the forward and backward deformation fields to the output/ folder
             print("--def flag is set to True")
-            # itk.transformwrite([phi_pre_post], os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
-            # itk.transformwrite([phi_post_pre], os.path.join(output_path, f"{subj}_df_b2f.hdf5"))
-
-            # itk.transformwrite([phi_pre_post.GetDisplacementField()], os.path.join(output_path, f"{subj}_df_f2b.nii.gz"))
-            # itk.transformwrite([phi_post_pre.GetDisplacementField()], os.path.join(output_path, f"{subj}_df_b2f.nii.gz"))
+            itk.imwrite(displacement_image_itk, os.path.join(output_path, f"{subj}_df_f2b.hdf5"))
+            itk.imwrite(
+                cast_itk_transformation_to_dispfield(phi_post_pre, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_01_*_t1.nii.gz"))[0])), 
+                os.path.join(output_path, f"{subj}_df_b2f.hdf5"))
 
         if args["reg"]:
             # write the followup_registered_to_baseline sequences (all 4 sequences provided) to the output/ folder
@@ -194,20 +191,13 @@ def apply_deformation(args):
 
     # If a save_path is provided then write the output there, otherwise return the output
     if args["path_to_output_nifti"] is not None:
-        sitk.WriteImage(o, f"{args['path_to_output_nifti']}.nii.gz")
+        itk.imwrite(o, f"{args['path_to_output_nifti']}.nii.gz")
     else:
         return o
 
 
 if __name__ == "__main__":
-    # You can first check what devices are available to the singularity
-    # setting device on GPU if available, else CPU
-    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
-    print("Using device:", device)
-
-    # Additional Info when using cuda
-    if device.type == "cuda":
-        print("GPU:", torch.cuda.get_device_name(0))
+    
 
     # Parse the input arguments
 
