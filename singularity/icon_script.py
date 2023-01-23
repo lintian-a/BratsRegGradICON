@@ -40,7 +40,10 @@ def get_model():
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/icon_lung/ICON/results/BraTS/gradicon_with_augment/debug/Step_1_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_with_augmentation/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_crosspatient_train/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_crosspatient/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_crosspatient_continue/2nd_step/Step_2_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_with_aug_cross_patient/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
     model.regis_net.load_state_dict(torch.load("/usr/local/bin/Step_2_final.trch"))
     return model
 
@@ -138,7 +141,7 @@ def generate_output(args):
             ))
 
         phi_pre_post, phi_post_pre = itk_wrapper.register_pair_with_multimodalities(
-            model, source, target#, finetune_steps=50
+            model, source, target, finetune_steps=50
         )
 
         # Make your prediction segmentation file for case BraTSReg_001
@@ -148,15 +151,13 @@ def generate_output(args):
 
         pre_landmarks = np.array(
             [
-                list(phi_pre_post.TransformPoint(t[1:]))
-                for t in post_landmarks * 1.0
+                [i+1] + list(phi_pre_post.TransformPoint(t[1:]))
+                for i, t in enumerate(post_landmarks * 1.0)
             ]
         )
 
-        pre_landmarks_ind = post_landmarks.copy()
-        pre_landmarks_ind[:, 1:] = pre_landmarks
 
-        np.savetxt(os.path.join(args["output"], f"{subj}.csv"), pre_landmarks_ind, header="Landmark,X,Y,Z", delimiter=",", fmt=['%i','%f','%f','%f'], comments='')
+        np.savetxt(os.path.join(args["output"], f"{subj}.csv"), pre_landmarks, header="Landmark,X,Y,Z", delimiter=",", fmt=['%i','%f','%f','%f'], comments='')
 
         
         ## 2. calculate the determinant of jacobian of the deformation field
