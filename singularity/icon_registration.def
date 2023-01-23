@@ -35,8 +35,7 @@ From: nvidia/cuda:10.2-cudnn8-devel-ubuntu18.04
 %files
   # place your python script inside the container
   icon_script.py /usr/local/bin/my_script.py
-  # /playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon/debug/2nd_step/Step_2_final.trch /usr/local/bin/Step_2_final.trch
-  # /playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon/debug/2nd_step/Step_2_final.trch /usr/local/bin/Step_2_final.trch
+  /playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_with_aug_cross_patient/2nd_step/Step_2_final.trch /usr/local/bin/Step_2_final.trch
 
 
 # ***Please dont change the following lines
