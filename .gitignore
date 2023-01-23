@@ -14,3 +14,4 @@ test_files/*
 to_submit/
 to_test_train/
 .vscode
+tmp
