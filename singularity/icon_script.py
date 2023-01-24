@@ -2,16 +2,17 @@ import argparse
 import glob
 import os
 
+import icon_registration as icon
+import icon_registration.pretrained_models
 import itk
 import numpy as np
 import pandas as pd
 import torch
-import icon_registration
-import icon_registration.pretrained_models
-from icon_registration import itk_wrapper
-from icon_registration import networks
-import icon_registration as icon
-import SimpleITK as sitk
+import torch.nn.functional as F
+from icon_registration import config, networks
+from icon_registration.itk_wrapper import create_itk_transform
+from icon_registration.losses import to_floats
+
 
 def make_network(input_shape, include_last_step=False, lmbda=1.5, loss_fn=icon.LNCC(sigma=5)):
     
@@ -27,9 +28,142 @@ def make_network(input_shape, include_last_step=False, lmbda=1.5, loss_fn=icon.L
     if include_last_step:
         inner_net = icon.TwoStepRegistration(inner_net, icon.FunctionFromVectorField(networks.tallUNet2(dimension=dimension, input_channels=input_channels)))
     
-    net = icon.GradientICON(inner_net, loss_fn, lmbda=lmbda)
+    net = GradientICONSparse(inner_net, loss_fn, lmbda=lmbda)
     net.assign_identity_map(input_shape)
     return net
+
+def finetune_execute(model, image_A, image_B, steps):
+    state_dict = model.state_dict()
+    for param in model.parameters():
+        param.requires_grad = False
+    for param in model.regis_net.netPsi.net.parameters():
+        param.requires_grad = True
+    optimizer = torch.optim.Adam(model.regis_net.netPsi.net.parameters(), lr=0.00005)
+    for _ in range(steps):
+        optimizer.zero_grad()
+        loss_tuple = model(image_A, image_B)
+        print(loss_tuple)
+        loss_tuple[0].backward()
+        optimizer.step()
+        del loss_tuple
+    with torch.no_grad():
+        loss = model(image_A, image_B)
+    model.load_state_dict(state_dict)
+    return loss
+
+def register_pair_with_multimodalities(
+    model, image_A: list, image_B: list, finetune_steps=None, return_artifacts=False
+) -> "(itk.CompositeTransform, itk.CompositeTransform)":
+
+    assert len(image_A) == len(image_B), "image_A and image_B should have the same number of modalities."
+
+    # send model to cpu or gpu depending on config- auto detects capability
+    model.to(config.device)
+
+    A_npy, B_npy = [], []
+    for image_a, image_b in zip(image_A, image_B):
+        assert isinstance(image_a, itk.Image)
+        assert isinstance(image_b, itk.Image)
+
+        A_npy.append(np.array(image_a))
+        B_npy.append(np.array(image_b))
+
+        assert(np.max(A_npy[-1]) != np.min(A_npy[-1]))
+        assert(np.max(B_npy[-1]) != np.min(B_npy[-1]))
+
+    # turn images into torch Tensors: add batch dimensions (each of length 1)
+    A_trch = torch.Tensor(np.array(A_npy)).to(config.device)[None]
+    B_trch = torch.Tensor(np.array(B_npy)).to(config.device)[None]
+
+    shape = model.identity_map.shape[2:]
+    if list(A_trch.shape[2:]) != list(shape) or (list(B_trch.shape[2:]) != list(shape)):
+        # Here we resize the input images to the shape expected by the neural network. This affects the
+        # pixel stride as well as the magnitude of the displacement vectors of the resulting
+        # displacement field, which create_itk_transform will have to compensate for.
+        A_trch = F.interpolate(
+            A_trch, size=shape, mode="trilinear", align_corners=False
+        )
+        B_trch = F.interpolate(
+            B_trch, size=shape, mode="trilinear", align_corners=False
+        )
+
+    if finetune_steps == 0:
+        raise Exception("To indicate no finetune_steps, pass finetune_steps=None")
+
+    if finetune_steps == None:
+        with torch.no_grad():
+            loss = model(A_trch, B_trch)
+    else:
+        loss = finetune_execute(model, A_trch, B_trch, finetune_steps)
+
+    # phi_AB and phi_BA are [1, 3, H, W, D] pytorch tensors representing the forward and backward
+    # maps computed by the model
+    if hasattr(model, "prepare_for_viz"):
+        with torch.no_grad():
+            model.prepare_for_viz(A_trch, B_trch)
+    phi_AB = model.phi_AB(model.identity_map)
+    phi_BA = model.phi_BA(model.identity_map)
+
+    # the parameters ident, image_A, and image_B are used for their metadata
+    itk_transforms = (
+        create_itk_transform(phi_AB, model.identity_map, image_A[0], image_B[0]),
+        create_itk_transform(phi_BA, model.identity_map, image_B[0], image_A[0]),
+    )
+    if not return_artifacts:
+        return itk_transforms
+    else:
+        return itk_transforms + (to_floats(loss),)
+
+class GradientICONSparse(icon.GradientICON):
+    def compute_gradient_icon_loss(self, phi_AB, phi_BA):
+        Iepsilon = (
+            self.identity_map
+            + torch.randn(*self.identity_map.shape).to(self.identity_map.device)
+            * 1
+            / self.identity_map.shape[-1]
+        )[:, :, ::2, ::2, ::2]
+
+        # compute squared Frobenius of Jacobian of icon error
+
+        direction_losses = []
+
+        approximate_Iepsilon = phi_AB(phi_BA(Iepsilon))
+
+        inverse_consistency_error = Iepsilon - approximate_Iepsilon
+
+        delta = 0.001
+
+        if len(self.identity_map.shape) == 4:
+            dx = torch.Tensor([[[[delta]], [[0.0]]]]).to(self.identity_map.device)
+            dy = torch.Tensor([[[[0.0]], [[delta]]]]).to(self.identity_map.device)
+            direction_vectors = (dx, dy)
+
+        elif len(self.identity_map.shape) == 5:
+            dx = torch.Tensor([[[[[delta]]], [[[0.0]]], [[[0.0]]]]]).to(
+                self.identity_map.device
+            )
+            dy = torch.Tensor([[[[[0.0]]], [[[delta]]], [[[0.0]]]]]).to(
+                self.identity_map.device
+            )
+            dz = torch.Tensor([[[[0.0]]], [[[0.0]]], [[[delta]]]]).to(
+                self.identity_map.device
+            )
+            direction_vectors = (dx, dy, dz)
+        elif len(self.identity_map.shape) == 3:
+            dx = torch.Tensor([[[delta]]]).to(self.identity_map.device)
+            direction_vectors = (dx,)
+
+        for d in direction_vectors:
+            approximate_Iepsilon_d = phi_AB(phi_BA(Iepsilon + d))
+            inverse_consistency_error_d = Iepsilon + d - approximate_Iepsilon_d
+            grad_d_icon_error = (
+                inverse_consistency_error - inverse_consistency_error_d
+            ) / delta
+            direction_losses.append(torch.mean(grad_d_icon_error**2))
+
+        inverse_consistency_loss = sum(direction_losses)
+
+        return inverse_consistency_loss
 
 def get_model():
     input_shape = [1, 4, 155, 240, 240]
@@ -44,7 +178,8 @@ def get_model():
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_crosspatient_continue/2nd_step/Step_2_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_with_aug_cross_patient/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
-    model.regis_net.load_state_dict(torch.load("/usr/local/bin/Step_2_final.trch"))
+    model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_with_aug_cross_patient/2nd_step/Step_2_final.trch", map_location='cpu'))
+    # model.regis_net.load_state_dict(torch.load("/usr/local/bin/Step_2_final.trch"))
     return model
 
 def cast_itk_image_to_float(image):
@@ -140,7 +275,7 @@ def generate_output(args):
                 itk.imread(f"{subj_path}/{target_id}_{m}.nii.gz")
             ))
 
-        phi_pre_post, phi_post_pre = itk_wrapper.register_pair_with_multimodalities(
+        phi_pre_post, phi_post_pre = register_pair_with_multimodalities(
             model, source, target, finetune_steps=50
         )
 
