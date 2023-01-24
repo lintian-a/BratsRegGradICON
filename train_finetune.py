@@ -131,13 +131,21 @@ def train_two_stage(GPUS, ITERATIONS_PER_STEP):
     net_2 = make_network(input_shape, include_last_step=True)
 
     # net_2.regis_net.netPhi.load_state_dict(net.regis_net.state_dict())
-    net_2.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_crosspatient_train/debug/2nd_step/Step_2_final.trch", map_location="cpu"))
+    # net_2.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_crosspatient_train/debug/2nd_step/Step_2_final.trch", map_location="cpu"))
+    net_2.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_with_aug_cross_patient/debug/2nd_step/Step_2_final.trch", map_location="cpu"))
 
     if GPUS == 1:
         net_2_par = net_2.cuda()
     else:
         net_2_par = torch.nn.DataParallel(net_2).cuda()
     optimizer = torch.optim.Adam(net_2_par.parameters(), lr=0.00005)
+
+    # optimizer.load_state_dict(
+    #     torch.load(
+    #         "/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_crosspatient/debug/2nd_step/optimizer_weights_9900",
+    #         map_location='cpu'
+    #     )
+    # )
 
     net_2_par.train()
     

@@ -126,7 +126,7 @@ def train_two_stage(GPUS, ITERATIONS_PER_STEP):
     BATCH_SIZE = 2
     input_shape = [BATCH_SIZE, 4, 155, 240, 240]
 
-    batch_function = BraTSDataset(BATCH_SIZE*GPUS, with_augment=False, cross_patient=True)
+    batch_function = BraTSDataset(BATCH_SIZE*GPUS, with_augment=True, cross_patient=True)
 
     net = make_network(input_shape, include_last_step=False)
 
@@ -148,7 +148,7 @@ def train_two_stage(GPUS, ITERATIONS_PER_STEP):
     # To fit into the memory, we reduce the batch size to 1
     BATCH_SIZE = 1
     input_shape = [BATCH_SIZE, 4, 155, 240, 240]
-    batch_function = BraTSDataset(BATCH_SIZE*GPUS, with_augment=False, cross_patient=True)
+    batch_function = BraTSDataset(BATCH_SIZE*GPUS, with_augment=True, cross_patient=True)
 
     net_2 = make_network(input_shape, include_last_step=True)
 
@@ -187,4 +187,4 @@ if __name__ == "__main__":
     # torch.backends.cudnn.benchmark = True
     # torch.autograd.set_detect_anomaly(True)
     
-    train_two_stage(GPUS, 10000)
+    train_two_stage(GPUS, 20000)
