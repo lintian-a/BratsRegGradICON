@@ -178,8 +178,8 @@ def get_model():
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_crosspatient_continue/2nd_step/Step_2_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
     # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_with_aug_cross_patient/debug/2nd_step/Step_2_final.trch", map_location='cpu'))
-    model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_with_aug_cross_patient/2nd_step/Step_2_final.trch", map_location='cpu'))
-    # model.regis_net.load_state_dict(torch.load("/usr/local/bin/Step_2_final.trch"))
+    # model.regis_net.load_state_dict(torch.load("/playpen-raid2/lin.tian/projects/BratsRegGradICON/results/BraTSReg/gradicon_finetune/on_with_aug_cross_patient/2nd_step/Step_2_final.trch", map_location='cpu'))
+    model.regis_net.load_state_dict(torch.load("/usr/local/bin/Step_2_final.trch"))
     return model
 
 def cast_itk_image_to_float(image):
