@@ -249,6 +249,7 @@ def generate_output(args):
         print("GPU:", torch.cuda.get_device_name(0))
 
     model = get_model()
+    model.eval()
 
     # Now we iterate through each subject folder under input_path
     for subj_path in glob.glob(os.path.join(input_path, "BraTSReg*")):
