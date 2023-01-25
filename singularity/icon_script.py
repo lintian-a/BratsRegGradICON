@@ -296,7 +296,7 @@ def generate_output(args):
 
         
         ## 2. calculate the determinant of jacobian of the deformation field
-        displacement_image_itk = cast_itk_transformation_to_dispfield(phi_pre_post, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]))
+        displacement_image_itk = cast_itk_transformation_to_dispfield(phi_post_pre, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_00_*_t1.nii.gz"))[0]))
         det_itk = itk.displacement_field_jacobian_determinant_filter(displacement_image_itk)
         itk.imwrite(det_itk, os.path.join(args["output"], f"{subj}_detj.nii.gz"))
 
@@ -305,7 +305,7 @@ def generate_output(args):
             print("--def flag is set to True")
             itk.imwrite(displacement_image_itk, os.path.join(output_path, f"{subj}_df_b2f.nii.gz"))
             itk.imwrite(
-                cast_itk_transformation_to_dispfield(phi_post_pre, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_01_*_t1.nii.gz"))[0])), 
+                cast_itk_transformation_to_dispfield(phi_pre_post, itk.imread(glob.glob(os.path.join(subj_path, f"{subj}_01_*_t1.nii.gz"))[0])), 
                 os.path.join(output_path, f"{subj}_df_f2b.nii.gz"))
 
         if args["reg"]:
