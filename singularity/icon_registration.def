@@ -26,7 +26,7 @@ From: nvidia/cuda:10.2-cudnn8-devel-ubuntu18.04
     conda update --all
     
     pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu116
-    pip install pandas SimpleITK
+    pip install pandas
 
     pip install git+https://github.com/uncbiag/ICON.git@WIP_add_multichanel_support
 
